@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Alpha Dragon - CMB / Mantle Resonance Field Lab</title>
+    <style>
+        html, body {
+            margin: 0;
+            overflow: hidden;
+            background: black;
+            font-family: Arial, sans-serif;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #hud {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 13px;
+            line-height: 1.30;
+            background: rgba(0, 0, 0, 0.42);
+            padding: 10px 12px;
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 10px;
+            width: min(340px, calc(100vw - 32px));
+            max-height: calc(100vh - 20px);
+            overflow-y: auto;
+            overflow-x: hidden;
+            white-space: pre-line;
+            pointer-events: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.28) rgba(255,255,255,0.06);
+        }
+
+        #hud::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        #hud::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.06);
+            border-radius: 10px;
+        }
+
+        #hud::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.24);
+            border-radius: 10px;
+        }
+
+        #title {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: rgba(255,255,255,0.92);
+            font-size: 13px;
+            line-height: 1.3;
+            background: rgba(0, 0, 0, 0.34);
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.12);
+            pointer-events: none;
+            text-align: right;
+            max-width: min(320px, calc(100vw - 32px));
+            white-space: pre-line;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="simCanvas"></canvas>
+    <div id="hud"></div>
+    <div id="title">Alpha Dragon - CMB / Mantle Resonance Field Lab</div>
+
+    <script>
+        const canvas = document.getElementById("simCanvas");
+        const ctx = canvas.getContext("2d");
+        const hud = document.getElementById("hud");
+        const titleEl = document.getElementById("title");
+
+        const TAU = Math.PI * 2;
+        const COLOR_MODES = ["FLOW", "SPLIT", "MAG", "TEMP"];
+
+        // Approximate early nontrivial zeta zero ordinates, used only as a spacing seed table.
+        const RIEMANN_ZETA_ZEROS = [
+            14.134725, 21.022040, 25.010858, 30.424876, 32.935062,
+            37.586178, 40.918719, 43.327073, 48.005151, 49.773832,
+            52.970321, 56.446248, 59.347044, 60.831779, 65.112544,
+            67.079811, 69.546402, 72.067158, 75.704691, 77.144840,
+            79.337376, 82.910381, 84.735493, 87.425275, 88.809112,
+            92.491899, 94.651345, 95.870634, 98.831194, 101.317851,
+            103.725539, 105.446623, 107.168611, 111.029536, 111.874659,
+            114.320221, 116.226680, 118.790782, 121.370125, 122.946829
+        ];
+
+        const state = {
+            particles: [],
+            center1: { x: 0, y: 0 },
+            center2: { x: 0, y: 0 },
+
+            G: 0.12,
+            FSC_EFFECT: 1 / Math.pow(137, 3),
+            TRAIL_ALPHA: 0.14,
+            NOISE_STRENGTH: 0.035,
+
+            MAX_PARTICLES: 24000,
+            SPAWN_PER_FRAME: 80,
+            STARTING_PARTICLES: 3000,
+
+            TANGENTIAL_BIAS: 0.90,
+            RADIAL_BIAS: 0.08,
+
+            dualCoreMode: false,
+            pairMode: true,
+            cmbProjectionMode: true,
+            showDensityGraph: true,
+            showCenters: false,
+            showResonanceTrace: true,
+            showHeatStrip: true,
+            paused: false,
+
+            colorModeIndex: 0,
+            insideOutView: false,
+
+            frame: 0,
+            totalSpawned: 0,
+
+            radialBins: [],
+            radialBinCount: 140,
+
+            angularBins: [],
+            angularBinCount: 180,
+
+            cmbShellRadius: 0,
+
+            history: {
+                shellVariance: [],
+                resonanceAmplitude: [],
+                netRadialBias: [],
+                lockIndex: [],
+                maxLength: 240
+            },
+
+            riemannMode: false,
+            riemannStrength: 0.65,
+            riemannShells: [],
+
+            lastStats: {
+                particleCount: 0,
+                avgEnergy: 0,
+                avgSpeed: 0,
+                totalEnergy: 0,
+                totalKinetic: 0,
+                totalPotential: 0,
+                avgRadialFlow: 0,
+                dominantAngularBin: 0,
+                shellVariance: 0,
+                shellUniformity: 0,
+                resonanceAmplitude: 0,
+                hottestAngleDeg: 0,
+                coldestAngleDeg: 0,
+                hottestValue: 0,
+                coldestValue: 0,
+                coreCount: 0,
+                midCount: 0,
+                shellCount: 0,
+                riemannAlignment: 0,
+                riemannLockIndex: 0,
+                riemannPeakMatch: 0,
+                riemannSharpness: 0,
+                riemannCoherence: 0,
+                riemannDensityBias: 0,
+                riemannLockMomentum: 0
+            }
+        };
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            state.center1.x = canvas.width * 0.52;
+            state.center1.y = canvas.height * 0.52;
+            state.center2.x = canvas.width * 0.69;
+            state.center2.y = canvas.height * 0.52;
+            state.cmbShellRadius = Math.min(canvas.width, canvas.height) * 0.31;
+
+            buildBins();
+            refreshRiemannShells();
+        }
+
+        window.addEventListener("resize", resizeCanvas);
+
+        function buildRiemannShells() {
+            if (RIEMANN_ZETA_ZEROS.length < 3) return [];
+
+            const gaps = [];
+            for (let i = 1; i < RIEMANN_ZETA_ZEROS.length; i++) {
+                gaps.push(RIEMANN_ZETA_ZEROS[i] - RIEMANN_ZETA_ZEROS[i - 1]);
+            }
+
+            const gapSum = gaps.reduce((a, b) => a + b, 0) || 1;
+            let cumulative = 0;
+            const shellFractions = [];
+
+            for (let i = 0; i < gaps.length; i++) {
+                cumulative += gaps[i] / gapSum;
+                const edgeSafe = 0.12 + cumulative * 0.78;
+                shellFractions.push(edgeSafe);
+            }
+
+            return shellFractions;
+        }
+
+        function refreshRiemannShells() {
+            const fractions = buildRiemannShells();
+            state.riemannShells = fractions.map(f => f * state.cmbShellRadius);
+        }
+
+        function getNearestRiemannDistance(r) {
+            if (!state.riemannShells.length) return Infinity;
+            let best = Infinity;
+            for (let i = 0; i < state.riemannShells.length; i++) {
+                const d = Math.abs(r - state.riemannShells[i]);
+                if (d < best) best = d;
+            }
+            return best;
+        }
+
+        function getRiemannFieldMultiplier(r) {
+            if (!state.riemannMode || !state.riemannShells.length) return 1.0;
+            const shellWidth = Math.max(8, state.cmbShellRadius * 0.028);
+            const nearest = getNearestRiemannDistance(r);
+            const ridge = Math.exp(-(nearest * nearest) / (2 * shellWidth * shellWidth));
+            return 1 + state.riemannStrength * (ridge * 1.75 - 0.28);
+        }
+
+        function buildBins() {
+            state.radialBins = new Array(state.radialBinCount).fill(0);
+            state.angularBins = new Array(state.angularBinCount).fill(null).map(() => ({
+                count: 0,
+                temp: 0,
+                radialFlow: 0,
+                density: 0
+            }));
+        }
+
+        function resetBins() {
+            state.radialBins.fill(0);
+            for (let i = 0; i < state.angularBins.length; i++) {
+                state.angularBins[i].count = 0;
+                state.angularBins[i].temp = 0;
+                state.angularBins[i].radialFlow = 0;
+                state.angularBins[i].density = 0;
+            }
+        }
+
+        function randRange(min, max) {
+            return min + Math.random() * (max - min);
+        }
+
+        function clamp(value, min, max) {
+            return Math.max(min, Math.min(max, value));
+        }
+
+        function pushHistory(arr, value) {
+            arr.push(value);
+            if (arr.length > state.history.maxLength) arr.shift();
+        }
+
+        function createParticle(center, angleOverride = null, mirrored = false) {
+            const angle = angleOverride !== null ? angleOverride : Math.random() * TAU;
+            let radius = randRange(8, 28);
+            if (state.riemannMode && state.riemannShells.length) {
+                const idx = Math.floor(Math.random() * state.riemannShells.length);
+                const shellR = state.riemannShells[idx];
+                const jitter = randRange(-state.cmbShellRadius * 0.018, state.cmbShellRadius * 0.018);
+                radius = clamp(shellR + jitter, 8, state.cmbShellRadius * 0.98);
+            }
+            const speed = randRange(0.20, 1.40);
+            const mass = randRange(0.7, 2.2);
+
+            const radialDirX = Math.cos(angle);
+            const radialDirY = Math.sin(angle);
+            const tangentialX = Math.cos(angle + Math.PI / 2);
+            const tangentialY = Math.sin(angle + Math.PI / 2);
+            const directionFlip = mirrored ? -1 : 1;
+
+            return {
+                x: center.x + radialDirX * radius,
+                y: center.y + radialDirY * radius,
+                vx: (tangentialX * state.TANGENTIAL_BIAS + radialDirX * state.RADIAL_BIAS) * speed * directionFlip,
+                vy: (tangentialY * state.TANGENTIAL_BIAS + radialDirY * state.RADIAL_BIAS) * speed * directionFlip,
+                mass,
+                life: Math.floor(randRange(500, 1400)),
+                hue: 200,
+                alpha: 1,
+                temp: 0,
+                radialVelocity: 0,
+                antiPhase: mirrored ? -1 : 1
+            };
+        }
+
+        function spawnParticles(count) {
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * TAU;
+                if (state.pairMode && state.particles.length < state.MAX_PARTICLES - 1) {
+                    state.particles.push(
+                        createParticle(state.center1, angle, false),
+                        createParticle(state.center1, angle + Math.PI, true)
+                    );
+                    state.totalSpawned += 2;
+                } else {
+                    state.particles.push(createParticle(state.center1, angle, false));
+                    state.totalSpawned += 1;
+                }
+            }
+        }
+
+        function applyCenterForce(p, center, scale = 1.0) {
+            const dx = center.x - p.x;
+            const dy = center.y - p.y;
+            const dist = Math.sqrt(dx * dx + dy * dy) + 0.0001;
+
+            const noise = 1 + ((Math.random() - 0.5) * state.NOISE_STRENGTH * 2);
+            const riemannMult = center === state.center1 ? getRiemannFieldMultiplier(dist) : 1.0;
+            const force = ((state.G * scale) * p.mass * state.FSC_EFFECT * noise * riemannMult) / (1 + dist * 0.08);
+
+            p.vx += force * (dx / dist);
+            p.vy += force * (dy / dist);
+
+            return -force * dist;
+        }
+
+        function assignParticleColor(p) {
+            const mode = COLOR_MODES[state.colorModeIndex];
+            const flowNorm = clamp(p.radialVelocity * 18, -1, 1);
+            const magNorm = clamp(Math.abs(p.radialVelocity) * 14, 0, 1);
+            const tempNorm = clamp(p.temp * 0.45, 0, 1);
+
+            if (mode === "FLOW") {
+                if (flowNorm > 0) {
+                    p.hue = 8;
+                    p.alpha = 0.20 + 0.80 * Math.abs(flowNorm);
+                } else {
+                    p.hue = 220;
+                    p.alpha = 0.20 + 0.80 * Math.abs(flowNorm);
+                }
+                return;
+            }
+
+            if (mode === "SPLIT") {
+                if (flowNorm > 0.10) {
+                    p.hue = 0;
+                    p.alpha = 0.96;
+                } else if (flowNorm < -0.10) {
+                    p.hue = 220;
+                    p.alpha = 0.96;
+                } else {
+                    p.hue = 0;
+                    p.alpha = 0.03;
+                }
+                return;
+            }
+
+            if (mode === "MAG") {
+                p.hue = 45;
+                p.alpha = 0.08 + 0.92 * magNorm;
+                return;
+            }
+
+            if (mode === "TEMP") {
+                p.hue = 240 - 240 * tempNorm;
+                p.alpha = 0.22 + 0.78 * tempNorm;
+            }
+        }
+
+        function updateParticle(p) {
+            let totalPotential = 0;
+
+            totalPotential += applyCenterForce(p, state.center1, 1.0);
+            if (state.dualCoreMode) {
+                totalPotential += applyCenterForce(p, state.center2, 0.82);
+            }
+
+            p.x += p.vx;
+            p.y += p.vy;
+
+            const dx = p.x - state.center1.x;
+            const dy = p.y - state.center1.y;
+            const r = Math.sqrt(dx * dx + dy * dy) + 0.0001;
+            const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+
+            p.radialVelocity = (p.vx * dx + p.vy * dy) / r;
+            p.temp = speed * p.mass;
+
+            assignParticleColor(p);
+
+            const kinetic = 0.5 * p.mass * (p.vx * p.vx + p.vy * p.vy);
+            p.life -= 1;
+
+            return {
+                kinetic,
+                potential: totalPotential,
+                speed,
+                radialDistance: r,
+                radialFlow: p.radialVelocity
+            };
+        }
+
+        function sampleParticleToBins(p, radialDistance, temp, radialFlow) {
+            const maxR = state.cmbShellRadius;
+            const radialNorm = radialDistance / maxR;
+            const radialIndex = Math.floor(radialNorm * state.radialBinCount);
+
+            if (radialIndex >= 0 && radialIndex < state.radialBins.length) {
+                state.radialBins[radialIndex] += 1;
+            }
+
+            const angle = Math.atan2(p.y - state.center1.y, p.x - state.center1.x);
+            const normAngle = (angle + Math.PI) / TAU;
+            const angularIndex = Math.floor(normAngle * state.angularBinCount);
+
+            if (angularIndex >= 0 && angularIndex < state.angularBins.length) {
+                const bin = state.angularBins[angularIndex];
+                bin.count += 1;
+                bin.temp += temp;
+                bin.radialFlow += radialFlow;
+                bin.density += 1;
+            }
+        }
+
+        function projectPoint(x, y) {
+            if (!state.insideOutView) {
+                return { x, y };
+            }
+
+            const dx = x - state.center1.x;
+            const dy = y - state.center1.y;
+            const theta = Math.atan2(dy, dx);
+            const r = Math.sqrt(dx * dx + dy * dy);
+            const shellR = state.cmbShellRadius;
+            const outerLimit = Math.max(canvas.width, canvas.height) * 0.58;
+
+            let mappedR;
+            if (r <= shellR) {
+                mappedR = shellR - r;
+            } else {
+                mappedR = shellR + (r - shellR) * 0.50;
+            }
+
+            mappedR = clamp(mappedR, 0, outerLimit);
+
+            return {
+                x: state.center1.x + Math.cos(theta) * mappedR,
+                y: state.center1.y + Math.sin(theta) * mappedR
+            };
+        }
+
+        function drawParticle(p) {
+            const pos = projectPoint(p.x, p.y);
+            const sizeBase = state.insideOutView ? 0.95 : 1.15;
+            const size = clamp(p.mass * sizeBase, 0.9, 2.8);
+
+            ctx.fillStyle = `hsla(${p.hue}, 100%, 62%, ${p.alpha})`;
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, size, 0, TAU);
+            ctx.fill();
+        }
+
+        function drawCenters() {
+            if (!state.showCenters) return;
+
+            const c1 = projectPoint(state.center1.x, state.center1.y);
+            ctx.strokeStyle = "rgba(255,255,255,0.35)";
+            ctx.beginPath();
+            ctx.arc(c1.x, c1.y, 8, 0, TAU);
+            ctx.stroke();
+
+            if (state.dualCoreMode) {
+                const c2 = projectPoint(state.center2.x, state.center2.y);
+                ctx.strokeStyle = "rgba(255,200,120,0.35)";
+                ctx.beginPath();
+                ctx.arc(c2.x, c2.y, 8, 0, TAU);
+                ctx.stroke();
+            }
+        }
+
+        function getBinMetric(bin) {
+            if (bin.count <= 0) return 0;
+            const mode = COLOR_MODES[state.colorModeIndex];
+
+            if (mode === "TEMP") return bin.temp / bin.count;
+            if (mode === "MAG") return Math.abs(bin.radialFlow / bin.count);
+            return bin.radialFlow / bin.count;
+        }
+
+        function metricToShellColor(metric) {
+            const mode = COLOR_MODES[state.colorModeIndex];
+
+            if (mode === "FLOW") {
+                if (metric > 0.02) {
+                    const a = clamp(0.35 + metric * 2.2, 0.35, 0.95);
+                    return { hue: 0, alpha: a };
+                }
+                if (metric < -0.02) {
+                    const a = clamp(0.35 + Math.abs(metric) * 2.2, 0.35, 0.95);
+                    return { hue: 220, alpha: a };
+                }
+                return { hue: 0, alpha: 0.10 };
+            }
+
+            if (mode === "SPLIT") {
+                if (metric > 0.05) return { hue: 0, alpha: 0.95 };
+                if (metric < -0.05) return { hue: 220, alpha: 0.95 };
+                return { hue: 0, alpha: 0.03 };
+            }
+
+            if (mode === "MAG") {
+                const mag = clamp(metric * 8, 0, 1);
+                return { hue: 45, alpha: 0.18 + 0.82 * mag };
+            }
+
+            const tempNorm = clamp(metric * 0.3, 0, 1);
+            return { hue: 240 - 240 * tempNorm, alpha: 0.24 + 0.72 * tempNorm };
+        }
+
+        function drawOutsideShell() {
+            const shellR = state.cmbShellRadius;
+            const thickness = 8;
+
+            for (let i = 0; i < state.angularBins.length; i++) {
+                const bin = state.angularBins[i];
+                if (bin.count <= 0) continue;
+
+                const metric = getBinMetric(bin);
+                const shellColor = metricToShellColor(metric);
+
+                const a0 = (i / state.angularBins.length) * TAU;
+                const a1 = ((i + 1) / state.angularBins.length) * TAU;
+
+                ctx.strokeStyle = `hsla(${shellColor.hue}, 100%, 62%, ${shellColor.alpha})`;
+                ctx.lineWidth = thickness;
+                ctx.beginPath();
+                ctx.arc(state.center1.x, state.center1.y, shellR, a0, a1);
+                ctx.stroke();
+            }
+
+            ctx.strokeStyle = "rgba(255,255,255,0.10)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(state.center1.x, state.center1.y, shellR, 0, TAU);
+            ctx.stroke();
+        }
+
+        function drawInsideShell() {
+            const shellR = state.cmbShellRadius;
+
+            ctx.strokeStyle = "rgba(190,255,248,0.88)";
+            ctx.lineWidth = 3.0;
+            ctx.beginPath();
+            ctx.arc(state.center1.x, state.center1.y, shellR, 0, TAU);
+            ctx.stroke();
+
+            ctx.strokeStyle = "rgba(190,255,248,0.20)";
+            ctx.lineWidth = 1.1;
+            ctx.beginPath();
+            ctx.arc(state.center1.x, state.center1.y, shellR * 0.92, 0, TAU);
+            ctx.stroke();
+        }
+
+        function drawRiemannShellGuides() {
+            if (!state.riemannMode || !state.riemannShells.length) return;
+
+            for (let i = 0; i < state.riemannShells.length; i++) {
+                const r = state.riemannShells[i];
+                ctx.strokeStyle = i % 2 === 0
+                    ? "rgba(255, 220, 120, 0.10)"
+                    : "rgba(120, 190, 255, 0.08)";
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(state.center1.x, state.center1.y, r, 0, TAU);
+                ctx.stroke();
+            }
+        }
+
+        function drawCMBShellProjection() {
+            if (!state.cmbProjectionMode) return;
+            if (state.insideOutView) drawInsideShell();
+            else drawOutsideShell();
+        }
+
+        function getAnalysisLayout() {
+            const w = Math.min(350, Math.max(270, canvas.width * 0.23));
+            const h = 74;
+            const gap = 8;
+            const rightPad = 14;
+            const bottomPad = 16;
+            const legendH = 34;
+
+            const x = canvas.width - w - rightPad;
+            const traceY = canvas.height - h - bottomPad;
+            const heatY = traceY - h - gap;
+            const densityY = heatY - h - gap;
+            const legendY = densityY - legendH - 8;
+
+            return {
+                x, w, h,
+                legendY,
+                densityY,
+                heatY,
+                traceY
+            };
+        }
+
+        function drawPanelFrame(x0, y0, w, h, title) {
+            ctx.fillStyle = "rgba(0,0,0,0.35)";
+            ctx.fillRect(x0, y0, w, h);
+            ctx.strokeStyle = "rgba(255,255,255,0.15)";
+            ctx.strokeRect(x0, y0, w, h);
+
+            ctx.fillStyle = "rgba(255,255,255,0.88)";
+            ctx.font = "12px Arial";
+            ctx.fillText(title, x0 + 8, y0 + 14);
+        }
+
+        function drawAnalysisLegend() {
+            const L = getAnalysisLayout();
+            const x0 = L.x;
+            const y0 = L.legendY;
+            const w = L.w;
+            const h = 34;
+
+            ctx.fillStyle = "rgba(0,0,0,0.28)";
+            ctx.fillRect(x0, y0, w, h);
+            ctx.strokeStyle = "rgba(255,255,255,0.12)";
+            ctx.strokeRect(x0, y0, w, h);
+
+            ctx.fillStyle = "rgba(255,255,255,0.92)";
+            ctx.font = "12px Arial";
+            ctx.fillText("Analysis", x0 + 8, y0 + 14);
+
+            ctx.fillStyle = "rgba(220,220,220,0.78)";
+            ctx.font = "11px Arial";
+            ctx.fillText("radius → density", x0 + 8, y0 + 28);
+            ctx.fillText("angle → shell color", x0 + 118, y0 + 28);
+            ctx.fillText("angle → resonance", x0 + 232, y0 + 28);
+        }
+
+        function drawDensityGraph() {
+            if (!state.showDensityGraph) return;
+
+            const L = getAnalysisLayout();
+            const x0 = L.x;
+            const y0 = L.densityY;
+            const graphW = L.w;
+            const graphH = L.h;
+
+            drawPanelFrame(x0, y0, graphW, graphH, "Radial Density");
+
+            let maxVal = 1;
+            for (let i = 0; i < state.radialBins.length; i++) {
+                if (state.radialBins[i] > maxVal) maxVal = state.radialBins[i];
+            }
+
+            if (state.riemannMode && state.riemannShells.length) {
+                ctx.strokeStyle = "rgba(255, 220, 120, 0.16)";
+                ctx.lineWidth = 1;
+                for (let i = 0; i < state.riemannShells.length; i++) {
+                    const frac = state.riemannShells[i] / Math.max(1, state.cmbShellRadius);
+                    const x = x0 + frac * graphW;
+                    ctx.beginPath();
+                    ctx.moveTo(x, y0 + 18);
+                    ctx.lineTo(x, y0 + graphH);
+                    ctx.stroke();
+                }
+            }
+
+            ctx.beginPath();
+            for (let i = 0; i < state.radialBins.length; i++) {
+                const x = x0 + (i / (state.radialBins.length - 1)) * graphW;
+                const y = y0 + graphH - (state.radialBins[i] / maxVal) * (graphH - 10);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.strokeStyle = "rgba(120,200,255,0.95)";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+        }
+
+        function drawShellHeatStrip() {
+            if (!state.showHeatStrip) return;
+
+            const L = getAnalysisLayout();
+            const x0 = L.x;
+            const y0 = L.heatY;
+            const w = L.w;
+            const h = L.h;
+
+            drawPanelFrame(x0, y0, w, h, "Shell Heat Strip");
+
+            const stripTop = y0 + 22;
+            const stripHeight = h - 28;
+
+            for (let i = 0; i < state.angularBins.length; i++) {
+                const bin = state.angularBins[i];
+                const metric = getBinMetric(bin);
+                const color = metricToShellColor(metric);
+
+                const x = x0 + (i / state.angularBins.length) * w;
+                const bw = Math.ceil(w / state.angularBins.length) + 1;
+
+                ctx.fillStyle = `hsla(${color.hue}, 100%, 62%, ${Math.max(0.22, color.alpha)})`;
+                ctx.fillRect(x, stripTop, bw, stripHeight);
+            }
+
+            ctx.strokeStyle = "rgba(255,255,255,0.10)";
+            ctx.strokeRect(x0 + 1, stripTop, w - 2, stripHeight);
+        }
+
+        function drawResonanceTrace() {
+            if (!state.showResonanceTrace) return;
+
+            const L = getAnalysisLayout();
+            const x0 = L.x;
+            const y0 = L.traceY;
+            const graphW = L.w;
+            const graphH = L.h;
+
+            drawPanelFrame(x0, y0, graphW, graphH, "CMB Resonance Trace");
+
+            const values = [];
+            let maxAbs = 0.0001;
+
+            for (let i = 0; i < state.angularBins.length; i++) {
+                const metric = getBinMetric(state.angularBins[i]);
+                values.push(metric);
+                maxAbs = Math.max(maxAbs, Math.abs(metric));
+            }
+
+            const midY = y0 + graphH / 2;
+
+            ctx.strokeStyle = "rgba(255,255,255,0.12)";
+            ctx.beginPath();
+            ctx.moveTo(x0, midY);
+            ctx.lineTo(x0 + graphW, midY);
+            ctx.stroke();
+
+            ctx.beginPath();
+            for (let i = 0; i < values.length; i++) {
+                const x = x0 + (i / (values.length - 1)) * graphW;
+                const y = midY - (values[i] / maxAbs) * (graphH * 0.34);
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+
+            const mode = COLOR_MODES[state.colorModeIndex];
+            let traceColor = "rgba(255,140,140,0.95)";
+            if (mode === "FLOW" || mode === "SPLIT") traceColor = "rgba(255,160,160,0.95)";
+            if (mode === "MAG") traceColor = "rgba(255,220,120,0.95)";
+            if (mode === "TEMP") traceColor = "rgba(120,200,255,0.95)";
+
+            ctx.strokeStyle = traceColor;
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+
+            ctx.fillStyle = "rgba(255,255,255,0.55)";
+            ctx.font = "11px Arial";
+            ctx.fillText("angle →", x0 + graphW - 44, y0 + graphH - 8);
+        }
+
+        function removeDeadAndEscapedParticles() {
+            const maxR = Math.max(canvas.width, canvas.height) * 0.75;
+
+            for (let i = state.particles.length - 1; i >= 0; i--) {
+                const p = state.particles[i];
+                const dx = p.x - state.center1.x;
+                const dy = p.y - state.center1.y;
+                const r = Math.sqrt(dx * dx + dy * dy);
+
+                const tooFar =
+                    r > maxR ||
+                    p.x < -120 || p.x > canvas.width + 120 ||
+                    p.y < -120 || p.y > canvas.height + 120;
+
+                if (p.life <= 0 || tooFar) {
+                    state.particles.splice(i, 1);
+                }
+            }
+        }
+
+        function computeBehaviorReaders() {
+            const angularMetrics = [];
+            let hottestValue = -Infinity;
+            let coldestValue = Infinity;
+            let hottestBin = 0;
+            let coldestBin = 0;
+            let sum = 0;
+            let count = 0;
+
+            for (let i = 0; i < state.angularBins.length; i++) {
+                const value = getBinMetric(state.angularBins[i]);
+                angularMetrics.push(value);
+                sum += value;
+                count += 1;
+
+                if (value > hottestValue) {
+                    hottestValue = value;
+                    hottestBin = i;
+                }
+                if (value < coldestValue) {
+                    coldestValue = value;
+                    coldestBin = i;
+                }
+            }
+
+            const mean = count ? sum / count : 0;
+            let variance = 0;
+            for (let i = 0; i < angularMetrics.length; i++) {
+                const d = angularMetrics[i] - mean;
+                variance += d * d;
+            }
+            variance = count ? variance / count : 0;
+
+            const resonanceAmplitude = hottestValue - coldestValue;
+
+            const binCounts = state.angularBins.map(b => b.count);
+            const maxCount = Math.max(...binCounts, 1);
+            const minCount = Math.min(...binCounts);
+            const shellUniformity = maxCount > 0 ? 1 - ((maxCount - minCount) / maxCount) : 0;
+
+            pushHistory(state.history.shellVariance, variance);
+            pushHistory(state.history.resonanceAmplitude, resonanceAmplitude);
+            pushHistory(state.history.netRadialBias, mean);
+
+            return {
+                shellVariance: variance,
+                shellUniformity,
+                resonanceAmplitude,
+                hottestAngleDeg: Math.round((hottestBin / state.angularBinCount) * 360),
+                coldestAngleDeg: Math.round((coldestBin / state.angularBinCount) * 360),
+                hottestValue,
+                coldestValue
+            };
+        }
+
+        function computeRiemannAlignment(readers) {
+            if (!state.riemannMode || !state.riemannShells.length || !state.radialBins.length) {
+                return {
+                    alignment: 0,
+                    lockIndex: 0,
+                    peakMatch: 0,
+                    sharpness: 0,
+                    coherence: 0,
+                    densityBias: 0,
+                    momentum: 0
+                };
+            }
+
+            const totalBins = Math.max(1, state.radialBins.length);
+            const totalDensity = state.radialBins.reduce((a, b) => a + b, 0);
+            const globalMean = totalDensity / totalBins;
+            if (globalMean <= 0 || totalDensity <= 0) {
+                return {
+                    alignment: 0,
+                    lockIndex: 0,
+                    peakMatch: 0,
+                    sharpness: 0,
+                    coherence: 0,
+                    densityBias: 0,
+                    momentum: 0
+                };
+            }
+
+            let alignmentScore = 0;
+            let peakScore = 0;
+            let sharpnessScore = 0;
+            let shellHitDensity = 0;
+            let expectedCoverageBins = 0;
+            let hits = 0;
+
+            for (let i = 0; i < state.riemannShells.length; i++) {
+                const frac = state.riemannShells[i] / Math.max(1, state.cmbShellRadius);
+                const idx = Math.floor(frac * (state.radialBinCount - 1));
+
+                const nearStart = Math.max(0, idx - 1);
+                const nearEnd = Math.min(state.radialBins.length - 1, idx + 1);
+                const localStart = Math.max(0, idx - 4);
+                const localEnd = Math.min(state.radialBins.length - 1, idx + 4);
+
+                let nearSum = 0;
+                let nearPeak = 0;
+                let nearCount = 0;
+                for (let j = nearStart; j <= nearEnd; j++) {
+                    nearSum += state.radialBins[j];
+                    nearPeak = Math.max(nearPeak, state.radialBins[j]);
+                    nearCount += 1;
+                }
+
+                let localSum = 0;
+                let localPeak = 0;
+                let localCount = 0;
+                for (let j = localStart; j <= localEnd; j++) {
+                    localSum += state.radialBins[j];
+                    localPeak = Math.max(localPeak, state.radialBins[j]);
+                    localCount += 1;
+                }
+
+                const nearMean = nearSum / Math.max(1, nearCount);
+                const localMean = localSum / Math.max(1, localCount);
+
+                alignmentScore += nearMean / Math.max(1e-6, globalMean);
+                peakScore += nearPeak / Math.max(1e-6, localPeak);
+                sharpnessScore += Math.max(0, (nearPeak - localMean) / Math.max(1e-6, localMean));
+                shellHitDensity += nearSum;
+                expectedCoverageBins += nearCount;
+                hits += 1;
+            }
+
+            const alignment = hits ? alignmentScore / hits : 0;
+            const peakMatch = Math.max(0, Math.min(1, hits ? peakScore / hits : 0));
+            const sharpness = Math.max(0, Math.min(1, (hits ? sharpnessScore / hits : 0) / 1.35));
+
+            const expectedFrac = expectedCoverageBins / Math.max(1, totalBins);
+            const observedFrac = shellHitDensity / Math.max(1, totalDensity);
+            const densityBias = Math.max(0, Math.min(1, (observedFrac / Math.max(0.02, expectedFrac) - 0.75) / 1.6));
+
+            const varianceScore = Math.max(0, Math.min(1, 1 - (readers.shellVariance / 0.010)));
+            const resonanceScore = Math.max(0, Math.min(1, readers.resonanceAmplitude / 0.32));
+            const uniformityScore = Math.max(0, Math.min(1, (readers.shellUniformity - 0.28) / 0.40));
+            const coherence = Math.max(0, Math.min(1,
+                varianceScore * 0.45 +
+                resonanceScore * 0.25 +
+                uniformityScore * 0.30
+            ));
+
+            const alignNorm = Math.max(0, Math.min(1, (alignment - 0.70) / 0.85));
+            const lockIndex = Math.max(0, Math.min(1,
+                alignNorm * 0.34 +
+                peakMatch * 0.24 +
+                sharpness * 0.18 +
+                densityBias * 0.12 +
+                coherence * 0.12
+            ));
+
+            pushHistory(state.history.lockIndex, lockIndex);
+
+            let momentum = 0;
+            const hist = state.history.lockIndex;
+            if (hist.length >= 12) {
+                const recent = hist.slice(-12);
+                const prior = hist.slice(-24, -12);
+                const recentMean = recent.reduce((a, b) => a + b, 0) / recent.length;
+                const priorMean = prior.length ? prior.reduce((a, b) => a + b, 0) / prior.length : recentMean;
+                momentum = (recentMean - priorMean) * 100;
+            }
+
+            return {
+                alignment,
+                lockIndex,
+                peakMatch,
+                sharpness,
+                coherence,
+                densityBias,
+                momentum
+            };
+        }
+
+        function drawInsideVignette() {
+            if (!state.insideOutView) return;
+
+            const grad = ctx.createRadialGradient(
+                state.center1.x, state.center1.y, state.cmbShellRadius * 0.75,
+                state.center1.x, state.center1.y, Math.max(canvas.width, canvas.height) * 0.62
+            );
+            grad.addColorStop(0.0, "rgba(0,0,0,0.00)");
+            grad.addColorStop(0.72, "rgba(0,0,0,0.00)");
+            grad.addColorStop(1.0, "rgba(0,0,0,0.18)");
+
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function updateAndRender() {
+            if (!state.paused) {
+                ctx.fillStyle = `rgba(0, 0, 0, ${state.TRAIL_ALPHA})`;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                resetBins();
+
+                let totalEnergy = 0;
+                let totalKinetic = 0;
+                let totalPotential = 0;
+                let totalSpeed = 0;
+                let totalRadialFlow = 0;
+
+                let coreCount = 0;
+                let midCount = 0;
+                let shellCount = 0;
+
+                for (let i = 0; i < state.particles.length; i++) {
+                    const p = state.particles[i];
+                    const result = updateParticle(p);
+
+                    totalKinetic += result.kinetic;
+                    totalPotential += result.potential;
+                    totalEnergy += result.kinetic + result.potential;
+                    totalSpeed += result.speed;
+                    totalRadialFlow += result.radialFlow;
+
+                    if (result.radialDistance < state.cmbShellRadius * 0.18) coreCount++;
+                    else if (result.radialDistance < state.cmbShellRadius * 0.55) midCount++;
+                    else if (result.radialDistance < state.cmbShellRadius * 1.05) shellCount++;
+
+                    sampleParticleToBins(p, result.radialDistance, p.temp, result.radialFlow);
+                    drawParticle(p);
+                }
+
+                drawInsideVignette();
+
+                removeDeadAndEscapedParticles();
+
+                if (state.particles.length < state.MAX_PARTICLES) {
+                    spawnParticles(state.SPAWN_PER_FRAME);
+                }
+
+                drawRiemannShellGuides();
+                drawCMBShellProjection();
+                drawCenters();
+                drawAnalysisLegend();
+                drawDensityGraph();
+                drawShellHeatStrip();
+                drawResonanceTrace();
+
+                let dominantAngularBin = 0;
+                let dominantCount = 0;
+                for (let i = 0; i < state.angularBins.length; i++) {
+                    if (state.angularBins[i].count > dominantCount) {
+                        dominantCount = state.angularBins[i].count;
+                        dominantAngularBin = i;
+                    }
+                }
+
+                const readers = computeBehaviorReaders();
+                const riemannReaders = computeRiemannAlignment(readers);
+
+                state.lastStats = {
+                    particleCount: state.particles.length,
+                    avgEnergy: state.particles.length ? totalEnergy / state.particles.length : 0,
+                    avgSpeed: state.particles.length ? totalSpeed / state.particles.length : 0,
+                    totalEnergy,
+                    totalKinetic,
+                    totalPotential,
+                    avgRadialFlow: state.particles.length ? totalRadialFlow / state.particles.length : 0,
+                    dominantAngularBin,
+
+                    shellVariance: readers.shellVariance,
+                    shellUniformity: readers.shellUniformity,
+                    resonanceAmplitude: readers.resonanceAmplitude,
+                    hottestAngleDeg: readers.hottestAngleDeg,
+                    coldestAngleDeg: readers.coldestAngleDeg,
+                    hottestValue: readers.hottestValue,
+                    coldestValue: readers.coldestValue,
+
+                    coreCount,
+                    midCount,
+                    shellCount,
+                    riemannAlignment: riemannReaders.alignment,
+                    riemannLockIndex: riemannReaders.lockIndex,
+                    riemannPeakMatch: riemannReaders.peakMatch,
+                    riemannSharpness: riemannReaders.sharpness,
+                    riemannCoherence: riemannReaders.coherence,
+                    riemannDensityBias: riemannReaders.densityBias,
+                    riemannLockMomentum: riemannReaders.momentum
+                };
+
+                updateHUD();
+                state.frame++;
+            } else {
+                drawAnalysisLegend();
+                drawDensityGraph();
+                drawShellHeatStrip();
+                drawResonanceTrace();
+            }
+
+            requestAnimationFrame(updateAndRender);
+        }
+
+        function getBehaviorNote(s) {
+            if (state.riemannMode && s.riemannLockIndex >= 0.84) {
+                return "Riemann hard-lock / high shell coherence";
+            }
+            if (state.riemannMode && s.riemannLockIndex >= 0.66) {
+                return "Riemann-seeded shell locking";
+            }
+            if (s.shellUniformity > 0.82 && Math.abs(s.avgRadialFlow) < 0.18) {
+                return "Balanced shell / low drift";
+            }
+            if (s.avgRadialFlow > 0.45 && s.resonanceAmplitude > 0.35) {
+                return "Expansion-biased / high perturbation";
+            }
+            if (s.shellVariance > 0.20 && state.dualCoreMode) {
+                return "Dual-core interference dominant";
+            }
+            if (s.coreCount > s.shellCount * 1.4) {
+                return "Core compression dominant";
+            }
+            return "Reactive transitional field";
+        }
+
+        function getViewName() {
+            return state.insideOutView ? "INTERIOR HORIZON" : "EXTERIOR";
+        }
+
+        function getViewNote() {
+            if (state.insideOutView) return "Interior horizon projection";
+            return "Exterior field projection";
+        }
+
+        function updateHUD() {
+            const s = state.lastStats;
+            const dominantDeg = Math.round((s.dominantAngularBin / state.angularBinCount) * 360);
+            const colorMode = COLOR_MODES[state.colorModeIndex];
+            const viewMode = getViewName();
+            const behaviorNote = getBehaviorNote(s);
+            const viewNote = getViewNote();
+            const lockPct = Math.max(0, Math.min(100, Math.round(s.riemannLockIndex * 100)));
+            let lockState = "DRIFT";
+            if (lockPct >= 84) lockState = "HARD LOCK";
+            else if (lockPct >= 66) lockState = "LOCKING";
+            else if (lockPct >= 41) lockState = "FORMING";
+
+            let momentumLabel = "steady";
+            if (s.riemannLockMomentum > 1.2) momentumLabel = `rising +${s.riemannLockMomentum.toFixed(1)}`;
+            else if (s.riemannLockMomentum < -1.2) momentumLabel = `falling ${s.riemannLockMomentum.toFixed(1)}`;
+
+            titleEl.innerText = `Alpha Dragon - CMB / Mantle Resonance Field Lab
+Riemann Lock: ${lockPct}% ${lockState}
+Peak: ${Math.round(s.riemannPeakMatch * 100)}  Sharp: ${Math.round(s.riemannSharpness * 100)}  Coh: ${Math.round(s.riemannCoherence * 100)}`;
+
+            hud.innerText =
+`Mode:
+  [1] Dual Core .......... ${state.dualCoreMode ? "ON" : "OFF"}
+  [2] Pair Spawn ......... ${state.pairMode ? "ON" : "OFF"}
+  [3] CMB Shell .......... ${state.cmbProjectionMode ? "ON" : "OFF"}
+  [4] Density Graph ...... ${state.showDensityGraph ? "ON" : "OFF"}
+  [5] Show Centers ....... ${state.showCenters ? "ON" : "OFF"}
+  [6] Resonance Trace .... ${state.showResonanceTrace ? "ON" : "OFF"}
+  [7] Heat Strip ......... ${state.showHeatStrip ? "ON" : "OFF"}
+  [O] Freeze Snapshot .... ${state.paused ? "ON" : "OFF"}
+  [I] View Mode .......... ${viewMode}
+
+Color:
+  [M] Color Mode ......... ${colorMode}
+
+Hero Readers:
+  Riemann Lock Index ..... ${lockPct}%
+  Lock State ............. ${lockState}
+  Lock Momentum .......... ${momentumLabel}
+  Alignment Score ........ ${s.riemannAlignment.toFixed(3)}
+  Riemann Strength ....... ${state.riemannStrength.toFixed(2)}
+
+Riemann Components:
+  Peak Match ............. ${Math.round(s.riemannPeakMatch * 100)}%
+  Shell Sharpness ........ ${Math.round(s.riemannSharpness * 100)}%
+  Coherence .............. ${Math.round(s.riemannCoherence * 100)}%
+  Density Bias ........... ${Math.round(s.riemannDensityBias * 100)}%
+
+Field:
+  Particles .............. ${s.particleCount}
+  Total Spawned .......... ${state.totalSpawned}
+  Avg Speed .............. ${s.avgSpeed.toFixed(3)}
+  Avg Energy ............. ${s.avgEnergy.toFixed(4)}
+  Total Kinetic .......... ${s.totalKinetic.toFixed(2)}
+  Total Potential ........ ${s.totalPotential.toFixed(2)}
+  Net Radial Bias ........ ${s.avgRadialFlow.toFixed(4)}
+
+CMB / Resonance Readers:
+  Shell Uniformity ....... ${s.shellUniformity.toFixed(3)}
+  Shell Variance ......... ${s.shellVariance.toFixed(4)}
+  Resonance Amplitude .... ${s.resonanceAmplitude.toFixed(4)}
+  Hottest Angle .......... ${s.hottestAngleDeg}°
+  Coldest Angle .......... ${s.coldestAngleDeg}°
+  Dominant Bin ........... ${dominantDeg}°
+  Riemann Mode ........... ${state.riemannMode ? "ON" : "OFF"}
+
+Density Bands:
+  Core Count ............. ${s.coreCount}
+  Mid Count .............. ${s.midCount}
+  Shell Count ............ ${s.shellCount}
+
+Interpretation:
+  ${behaviorNote}
+  ${viewNote}
+
+Tuning:
+  [Q/A] Gravity .......... ${state.G.toFixed(3)}
+  [W/S] Noise ............ ${state.NOISE_STRENGTH.toFixed(3)}
+  [E/D] Trail ............ ${state.TRAIL_ALPHA.toFixed(3)}
+  [R/F] Spawn/Frame ...... ${state.SPAWN_PER_FRAME}
+  [T/G] Max Particles .... ${state.MAX_PARTICLES}
+  [Y/H] Shell Radius ..... ${Math.round(state.cmbShellRadius)}
+  [K] Riemann Mode ....... ${state.riemannMode ? "ON" : "OFF"}
+  [U/J] Riemann Strength . ${state.riemannStrength.toFixed(2)}
+
+Presets:
+  [Z] Balanced [X] Expansion
+  [V] Perturbed [B] Dual Core
+  [N] Pair Symmetry [C] Reset`;
+        }
+
+        function applyPreset(name) {
+            if (name === "balanced") {
+                state.G = 0.12;
+                state.NOISE_STRENGTH = 0.020;
+                state.TRAIL_ALPHA = 0.14;
+                state.SPAWN_PER_FRAME = 70;
+                state.MAX_PARTICLES = 22000;
+                state.dualCoreMode = false;
+                state.pairMode = true;
+                return;
+            }
+
+            if (name === "expansion") {
+                state.G = 0.06;
+                state.NOISE_STRENGTH = 0.030;
+                state.TRAIL_ALPHA = 0.10;
+                state.SPAWN_PER_FRAME = 100;
+                state.MAX_PARTICLES = 32000;
+                state.dualCoreMode = false;
+                state.pairMode = true;
+                return;
+            }
+
+            if (name === "perturbed") {
+                state.G = 0.14;
+                state.NOISE_STRENGTH = 0.120;
+                state.TRAIL_ALPHA = 0.12;
+                state.SPAWN_PER_FRAME = 90;
+                state.MAX_PARTICLES = 28000;
+                state.dualCoreMode = false;
+                state.pairMode = true;
+                return;
+            }
+
+            if (name === "dual") {
+                state.G = 0.12;
+                state.NOISE_STRENGTH = 0.050;
+                state.TRAIL_ALPHA = 0.14;
+                state.SPAWN_PER_FRAME = 80;
+                state.MAX_PARTICLES = 30000;
+                state.dualCoreMode = true;
+                state.pairMode = true;
+                return;
+            }
+
+            if (name === "pair") {
+                state.G = 0.12;
+                state.NOISE_STRENGTH = 0.015;
+                state.TRAIL_ALPHA = 0.16;
+                state.SPAWN_PER_FRAME = 70;
+                state.MAX_PARTICLES = 22000;
+                state.dualCoreMode = false;
+                state.pairMode = true;
+            }
+        }
+
+        window.addEventListener("keydown", (event) => {
+            const key = event.key.toLowerCase();
+
+            if (key === "1") state.dualCoreMode = !state.dualCoreMode;
+            if (key === "2") state.pairMode = !state.pairMode;
+            if (key === "3") state.cmbProjectionMode = !state.cmbProjectionMode;
+            if (key === "4") state.showDensityGraph = !state.showDensityGraph;
+            if (key === "5") state.showCenters = !state.showCenters;
+            if (key === "6") state.showResonanceTrace = !state.showResonanceTrace;
+            if (key === "7") state.showHeatStrip = !state.showHeatStrip;
+            if (key === "o" || key === "p") state.paused = !state.paused;
+            if (key === "i") state.insideOutView = !state.insideOutView;
+
+            if (key === "m") {
+                state.colorModeIndex = (state.colorModeIndex + 1) % COLOR_MODES.length;
+            }
+            if (key === "k") state.riemannMode = !state.riemannMode;
+
+
+            if (key === "q") state.G = clamp(state.G + 0.01, 0.01, 1.0);
+            if (key === "a") state.G = clamp(state.G - 0.01, 0.01, 1.0);
+
+            if (key === "w") state.NOISE_STRENGTH = clamp(state.NOISE_STRENGTH + 0.005, 0.0, 0.25);
+            if (key === "s") state.NOISE_STRENGTH = clamp(state.NOISE_STRENGTH - 0.005, 0.0, 0.25);
+
+            if (key === "e") state.TRAIL_ALPHA = clamp(state.TRAIL_ALPHA + 0.01, 0.01, 0.5);
+            if (key === "d") state.TRAIL_ALPHA = clamp(state.TRAIL_ALPHA - 0.01, 0.01, 0.5);
+
+            if (key === "r") state.SPAWN_PER_FRAME = Math.min(state.SPAWN_PER_FRAME + 10, 1000);
+            if (key === "f") state.SPAWN_PER_FRAME = Math.max(state.SPAWN_PER_FRAME - 10, 0);
+
+            if (key === "t") state.MAX_PARTICLES = Math.min(state.MAX_PARTICLES + 2000, 120000);
+            if (key === "g") state.MAX_PARTICLES = Math.max(state.MAX_PARTICLES - 2000, 1000);
+
+            if (key === "y") state.cmbShellRadius = Math.min(state.cmbShellRadius + 10, Math.min(canvas.width, canvas.height) * 0.49);
+            if (key === "h") state.cmbShellRadius = Math.max(state.cmbShellRadius - 10, 80);
+            refreshRiemannShells();
+
+            if (key === "u") state.riemannStrength = clamp(state.riemannStrength + 0.05, 0.0, 2.0);
+            if (key === "j") state.riemannStrength = clamp(state.riemannStrength - 0.05, 0.0, 2.0);
+
+            if (key === "z") applyPreset("balanced");
+            if (key === "x") applyPreset("expansion");
+            if (key === "v") applyPreset("perturbed");
+            if (key === "b") applyPreset("dual");
+            if (key === "n") applyPreset("pair");
+
+            if (key === "c") {
+                state.particles.length = 0;
+                state.totalSpawned = 0;
+                state.history.shellVariance.length = 0;
+                state.history.resonanceAmplitude.length = 0;
+                state.history.netRadialBias.length = 0;
+                refreshRiemannShells();
+                spawnParticles(state.STARTING_PARTICLES);
+            }
+        });
+
+        resizeCanvas();
+        buildBins();
+        spawnParticles(state.STARTING_PARTICLES);
+        updateHUD();
+        updateAndRender();
+    </script>
+</body>
+</html>
